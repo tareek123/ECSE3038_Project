@@ -1,0 +1,6 @@
+api/venv
+embedded/.pio
+embedded/.vscode
+api/__pycache__
+api/.env
+api/venv
