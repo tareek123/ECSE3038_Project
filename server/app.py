@@ -2,7 +2,7 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pymongo import MongoClient
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import re
 import os
 from dotenv import load_dotenv
@@ -23,6 +23,9 @@ db = client["smart_hub"]
 settings_collection = db["settings"]
 data_collection = db["sensor_data"]
 
+# Jamaica is UTC-5
+JAMAICA_TZ = timezone(timedelta(hours=-5))
+
 
 # ── Models ────────────────────────────────────────────────────────────────────
 
@@ -40,7 +43,6 @@ class SensorData(BaseModel):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def parse_duration_to_minutes(duration: str) -> int:
-    """Parse shorthand like '4h', '2h30m', '45m' into total minutes."""
     pattern = r"(?:(\d+)h)?(?:(\d+)m)?"
     match = re.fullmatch(pattern, duration.strip())
     if not match or not match.group(0):
@@ -51,13 +53,7 @@ def parse_duration_to_minutes(duration: str) -> int:
 
 
 def add_minutes_to_time(time_str: str, minutes: int) -> str:
-    """Add minutes to a HH:MM:SS string and return HH:MM:SS (wraps at midnight)."""
     base = datetime.strptime(time_str, "%H:%M:%S")
-    from datetime import timedelta
-    result = (base + timedelta(minutes=minutes)).replace(
-        year=base.year, month=base.month, day=base.day
-    )
-    # Handle wrap-around past midnight
     total_seconds = (
         base.hour * 3600 + base.minute * 60 + base.second + minutes * 60
     ) % 86400
@@ -67,7 +63,6 @@ def add_minutes_to_time(time_str: str, minutes: int) -> str:
 
 
 def time_in_window(current: str, start: str, end: str) -> bool:
-    """Return True if current time (HH:MM:SS) is in [start, end)."""
     def to_sec(t):
         h, m, s = map(int, t.split(":"))
         return h * 3600 + m * 60 + s
@@ -75,7 +70,6 @@ def time_in_window(current: str, start: str, end: str) -> bool:
     c, s, e = to_sec(current), to_sec(start), to_sec(end)
     if s <= e:
         return s <= c < e
-    # Window crosses midnight
     return c >= s or c < e
 
 
@@ -104,7 +98,7 @@ def put_settings(body: SettingsIn):
 
 @app.post("/data")
 def post_data(body: SensorData):
-    now = datetime.now().replace(microsecond=0)
+    now = datetime.now(JAMAICA_TZ).replace(microsecond=0)
     doc = {
         "temperature": body.temperature,
         "presence": body.presence,
@@ -123,7 +117,6 @@ def get_state():
     settings = settings_collection.find_one({}, {"_id": 0})
     latest = data_collection.find_one({}, sort=[("datetime", -1)])
 
-    # Safe defaults when no data/settings exist yet
     fan = False
     light = False
 
@@ -134,7 +127,7 @@ def get_state():
         user_light = settings.get("user_light", "00:00:00")
         light_time_off = settings.get("light_time_off", "00:00:00")
 
-        current_time = datetime.now().strftime("%H:%M:%S")
+        current_time = datetime.now(JAMAICA_TZ).strftime("%H:%M:%S")
 
         fan = temp > user_temp and presence
         light = time_in_window(current_time, user_light, light_time_off) and presence
@@ -149,5 +142,10 @@ def get_graph(size: int = Query(default=10, ge=1)):
     ).sort("datetime", -1).limit(size)
 
     readings = list(cursor)
-    readings.reverse()  # Chronological order (oldest → newest)
+    readings.reverse()
     return readings
+
+
+@app.get("/time")
+def get_time():
+    return {"server_time": datetime.now(JAMAICA_TZ).strftime("%H:%M:%S")}
