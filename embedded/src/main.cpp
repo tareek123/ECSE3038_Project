@@ -20,6 +20,13 @@ DallasTemperature tempSensor(&oneWire);
 const unsigned long INTERVAL_MS = 3000;
 unsigned long lastUpdate = 0;
 
+// How long to keep reporting "presence detected" after the PIR last went HIGH.
+// This just smooths/holds the raw sensor reading - it does NOT decide
+// whether the fan/light should be on (that's still the server's job).
+const unsigned long PRESENCE_HOLD_MS = 60000; // 1 minute
+unsigned long lastMotionTime = 0;
+bool everTriggered = false;
+
 // ── WiFi ─────────────────────────────────────────────────────────────────────
 void connectWiFi() {
     Serial.print("Connecting to WiFi");
@@ -117,6 +124,13 @@ void loop() {
         connectWiFi();
     }
 
+    // Continuously watch the PIR pin so we don't miss a short pulse
+    // between scheduled update cycles.
+    if (digitalRead(PIR_PIN) == HIGH) {
+        lastMotionTime = millis();
+        everTriggered = true;
+    }
+
     unsigned long now = millis();
     if (now - lastUpdate >= INTERVAL_MS) {
         lastUpdate = now;
@@ -128,7 +142,9 @@ void loop() {
             return;
         }
 
-        bool presence = digitalRead(PIR_PIN) == HIGH;
+        // Report presence=true if the PIR has gone HIGH within the
+        // last PRESENCE_HOLD_MS, even if it has since dropped LOW.
+        bool presence = everTriggered && (now - lastMotionTime <= PRESENCE_HOLD_MS);
 
         Serial.printf("[Sensors] temp=%.2f°C  presence=%s\n",
                       temperature, presence ? "true" : "false");
